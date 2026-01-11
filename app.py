@@ -18,17 +18,15 @@ st.set_page_config(
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
 else:
-    # Nếu chạy local mà chưa có secrets.toml thì dán tạm ở đây để test
+    # Key dự phòng (chỉ dùng khi test local)
     api_key = "AIzaSyCzcZwCm4cycmjT2Q1biZNYDfbI5sh9Cr4"
 
 genai.configure(api_key=api_key)
 
-# Cấu hình đường dẫn file và model
+# Cấu hình đường dẫn và model
 JSON_FILE = "TAI_LIEU_RB.json" 
 CHROMA_DB_PATH = "chroma_db_data"
 COLLECTION_NAME = "RAG_procedure"
-
-# Sửa lỗi 404 bằng cách dùng tên model chuẩn và thêm bọc kiểm tra
 GEMINI_MODEL_NAME = "gemini-1.5-flash" 
 
 # ==========================================
@@ -36,7 +34,7 @@ GEMINI_MODEL_NAME = "gemini-1.5-flash"
 # ==========================================
 @st.cache_resource
 def get_embedding_function():
-    # Model đa ngôn ngữ nhẹ, phù hợp RAM 1GB của Streamlit Cloud
+    # Sử dụng model đa ngôn ngữ nhẹ để tiết kiệm RAM trên Cloud
     return embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
@@ -69,16 +67,18 @@ def init_vector_db():
 collection = init_vector_db()
 
 # ==========================================
-# 3. LOGIC CHATBOT
+# 3. LOGIC CHATBOT (RAG)
 # ==========================================
 def get_chatbot_response(user_query):
+    # 1. Tìm kiếm trong Vector DB
     results = collection.query(query_texts=[user_query], n_results=3)
     
     context_text = ""
-   
+    # ĐÃ SỬA LỖI ZIP Ở ĐÂY:
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\nLink: {meta['url']}\n---"
+        context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\nLink: {meta['url']}\n---\n"
 
+    # 2. Tạo Prompt
     full_prompt = f"""Bạn là chuyên gia hướng dẫn thủ tục hành chính tại Việt Nam. 
 Hãy trả lời câu hỏi dựa trên Context dưới đây một cách lịch sự, chính xác.
 Nếu thông tin không có trong Context, hãy hướng dẫn người dùng liên hệ Cổng Dịch vụ công hoặc Cơ quan Công an.
@@ -89,6 +89,53 @@ CONTEXT:
 CÂU HỎI: {user_query}
 """
 
+    # 3. Gọi Gemini
     model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
     response = model.generate_content(full_prompt)
     return response.text
+
+# ==========================================
+# 4. GIAO DIỆN NGƯỜI DÙNG (UI)
+# ==========================================
+st.title("🇻🇳 Trợ lý ảo Thủ tục Hộ chiếu")
+st.caption("Dữ liệu cập nhật từ Cổng Dịch vụ công Quốc gia")
+
+if collection is None:
+    st.error(f"❌ Không tìm thấy file `{JSON_FILE}` trên GitHub. Vui lòng tải file lên cùng thư mục với app.py.")
+    st.stop()
+
+# Khởi tạo lịch sử chat
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Hiển thị tin nhắn cũ
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Nhận câu hỏi từ người dùng
+user_input = st.chat_input("Hỏi về thủ tục cấp hộ chiếu, lệ phí...")
+
+if user_input:
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Đang tra cứu dữ liệu..."):
+            try:
+                answer = get_chatbot_response(user_input)
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+            except Exception as e:
+                st.error(f"Đã xảy ra lỗi: {str(e)}")
+
+# Thanh bên (Sidebar)
+with st.sidebar:
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Emblem_of_Vietnam.svg/512px-Emblem_of_Vietnam.svg.png", width=80)
+    st.header("Thông tin hệ thống")
+    st.write("• Model: Gemini 1.5 Flash")
+    st.write("• DB: ChromaDB (RAG)")
+    if st.button("Xóa lịch sử Chat"):
+        st.session_state.messages = []
+        st.rerun()
