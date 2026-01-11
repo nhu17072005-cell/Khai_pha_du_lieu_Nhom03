@@ -26,8 +26,7 @@ genai.configure(api_key=api_key)
 JSON_FILE = "TAI_LIEU_RB.json" 
 CHROMA_DB_PATH = "chroma_db_data"
 COLLECTION_NAME = "RAG_procedure"
-
-GEMINI_MODEL_NAME = "gemini-2.5-flash" 
+GEMINI_MODEL_NAME = "gemini-1.5-flash" 
 
 # ==========================================
 # 2. XỬ LÝ DỮ LIỆU & EMBEDDING
@@ -73,11 +72,11 @@ def get_chatbot_response(user_query):
     results = collection.query(query_texts=[user_query], n_results=3)
     
     context_text = ""
-    # Đảm bảo zip chạy đúng với index [0] của ChromaDB results
+    # Duyệt qua kết quả tìm kiếm để xây dựng ngữ cảnh
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
         context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\nLink: {meta['url']}\n---\n"
 
-    # 2. Tạo Prompt
+    # 2. Tạo Prompt gửi cho AI
     full_prompt = f"""Bạn là chuyên gia hướng dẫn thủ tục hành chính tại Việt Nam. 
 Hãy trả lời câu hỏi dựa trên Context dưới đây một cách lịch sự, chính xác.
 Nếu thông tin không có trong Context, hãy hướng dẫn người dùng liên hệ Cổng Dịch vụ công hoặc Cơ quan Công an.
@@ -88,5 +87,50 @@ CONTEXT:
 CÂU HỎI: {user_query}
 """
 
-    # 3. Gọi Gemini (Sử dụng cấu hình chuẩn để tránh lỗi 404)
-    model = genai.GenerativeModel(GEMINI_MODEL_
+    # 3. Gọi Gemini (Đã sửa lỗi đóng ngoặc dòng 92)
+    model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
+    response = model.generate_content(full_prompt)
+    return response.text
+
+# ==========================================
+# 4. GIAO DIỆN NGƯỜI DÙNG (UI)
+# ==========================================
+st.title("🇻🇳 Trợ lý ảo Thủ tục Hộ chiếu")
+st.caption("Dữ liệu tra cứu từ Cổng Dịch vụ công Quốc gia")
+
+if collection is None:
+    st.error(f"❌ Không tìm thấy file `{JSON_FILE}`. Vui lòng kiểm tra lại trên GitHub.")
+    st.stop()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Hiển thị lịch sử chat
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Ô nhập liệu từ người dùng
+user_input = st.chat_input("Hỏi về thủ tục làm hộ chiếu...")
+
+if user_input:
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Đang tra cứu dữ liệu..."):
+            try:
+                answer = get_chatbot_response(user_input)
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+            except Exception as e:
+                st.error(f"Lỗi: {str(e)}")
+
+with st.sidebar:
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Emblem_of_Vietnam.svg/512px-Emblem_of_Vietnam.svg.png", width=80)
+    st.header("Hướng dẫn")
+    st.write("Sử dụng dữ liệu hành chính công để giải đáp các thắc mắc về hộ chiếu.")
+    if st.button("Xóa lịch sử Chat"):
+        st.session_state.messages = []
+        st.rerun()
