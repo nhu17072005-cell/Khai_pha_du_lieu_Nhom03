@@ -10,16 +10,13 @@ import google.generativeai as genai
 # ==========================================
 st.set_page_config(page_title="Hỗ trợ Hộ chiếu VN", page_icon="🇻🇳")
 
-# Kiểm tra Key trong Secrets
+# Lấy API Key từ Secrets
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
 else:
-    st.error("❌ Vui lòng dán API Key vào mục Secrets của Streamlit!")
+    st.error("❌ Vui lòng dán API Key vào mục Secrets của Streamlit Cloud!")
     st.stop()
-
-# ĐỊNH DANH MODEL CHUẨN (Ép dùng Flash để có Quota cao nhất)
-MODEL_NAME = "gemini-1.5-flash"
 
 # ==========================================
 # 2. XỬ LÝ DỮ LIỆU (RAG)
@@ -29,16 +26,16 @@ def init_db():
     if not os.path.exists("TAI_LIEU_RB.json"):
         return None
     
-    # Khởi tạo Vector DB nhẹ
+    # Khởi tạo Vector DB
     client = chromadb.PersistentClient(path="chroma_db_data")
     emb_func = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
     
     try:
-        collection = client.get_collection(name="passport_rag", embedding_function=emb_func)
+        collection = client.get_collection(name="passport_rag_v2", embedding_function=emb_func)
     except:
-        collection = client.create_collection(name="passport_rag", embedding_function=emb_func)
+        collection = client.create_collection(name="passport_rag_v2", embedding_function=emb_func)
         with open("TAI_LIEU_RB.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         collection.add(
@@ -51,25 +48,36 @@ def init_db():
 collection = init_db()
 
 # ==========================================
-# 3. HÀM XỬ LÝ PHẢN HỒI (TỐI ƯU QUOTA)
+# 3. HÀM GỌI AI (TỰ ĐỘNG SỬA LỖI MODEL)
 # ==========================================
 def get_ai_response(user_query):
-    # Tìm kiếm 1 đoạn văn duy nhất để tiết kiệm Token đầu vào
+    # 1. Tra cứu dữ liệu (Chỉ lấy 1 đoạn để tiết kiệm Quota)
     results = collection.query(query_texts=[user_query], n_results=1)
     context = results["documents"][0][0] if results["documents"] else "Không tìm thấy dữ liệu."
 
-    # Prompt tối giản để tiết kiệm hạn mức
-    prompt = f"Ngữ cảnh: {context}\nTrả lời ngắn gọn câu hỏi: {user_query}"
+    prompt = f"Dựa vào thông tin: {context}. Hãy trả lời ngắn gọn câu hỏi: {user_query}"
     
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt)
-    return response.text
+    # 2. Danh sách các tên model có thể hoạt động (để tránh lỗi 404)
+    model_names = ["models/gemini-1.5-flash", "gemini-1.5-flash"]
+    
+    last_error = ""
+    for name in model_names:
+        try:
+            model = genai.GenerativeModel(name)
+            response = model.generate_content(prompt)
+            return response.text, name
+        except Exception as e:
+            last_error = str(e)
+            continue # Thử tên model tiếp theo
+            
+    # Nếu tất cả đều lỗi, ném lỗi ra ngoài
+    raise Exception(last_error)
 
 # ==========================================
 # 4. GIAO DIỆN CHAT
 # ==========================================
 st.title("🇻🇳 Trợ lý Hộ chiếu Việt Nam")
-st.caption(f"Đang sử dụng hệ thống: {MODEL_NAME} (Free Tier)")
+st.caption("Dữ liệu tra cứu thủ tục chính thức")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -78,7 +86,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_input = st.chat_input("Hỏi về lệ phí, thủ tục...")
+user_input = st.chat_input("Nhập câu hỏi của bạn...")
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -88,23 +96,23 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Đang tra cứu..."):
             try:
-                answer = get_ai_response(user_input)
+                answer, used_model = get_ai_response(user_input)
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
+                # Hiển thị model đang chạy để theo dõi
+                st.info(f"💡 Phản hồi từ: {used_model}", icon="✅")
             except Exception as e:
                 error_msg = str(e)
                 if "429" in error_msg:
-                    st.warning("⚠️ Bạn đã dùng hết lượt miễn phí trong phút này. Vui lòng đợi 30-60 giây rồi thử lại.")
+                    st.warning("⚠️ Đang quá tải. Vui lòng chờ 30-60 giây rồi thử lại.")
                 elif "404" in error_msg:
-                    st.error("❌ Model hiện tại không khả dụng. Vui lòng kiểm tra lại API Key.")
+                    st.error("❌ Model hiện tại không khả dụng. Có thể do API Key hoặc khu vực.")
                 else:
-                    st.error(f"Lỗi hệ thống: {error_msg}")
+                    st.error(f"Lỗi: {error_msg}")
 
-# Sidebar
 with st.sidebar:
-    st.header("Lưu ý")
-    st.write("- Chỉ hỏi về thủ tục hộ chiếu.")
-    st.write("- Nếu bị lỗi quá tải, hãy chờ 1 phút.")
+    st.header("Thông tin")
+    st.write("- Hệ thống tự động chọn model ổn định nhất.")
     if st.button("Xóa lịch sử"):
         st.session_state.messages = []
         st.rerun()
