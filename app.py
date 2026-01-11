@@ -24,72 +24,80 @@ else:
 def init_db():
     if not os.path.exists("TAI_LIEU_RB.json"):
         return None
+    
     client = chromadb.PersistentClient(path="chroma_db_data")
+    
+    # Sử dụng model embedding mặc định của SentenceTransformer
     emb_func = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
+    
     try:
-        # Sử dụng collection mới để cập nhật metadata URL
-        collection = client.get_collection(name="passport_official_v1", embedding_function=emb_func)
-    except:
-        collection = client.create_collection(name="passport_official_v1", embedding_function=emb_func)
-        with open("TAI_LIEU_RB.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        collection.add(
-            ids=[str(i) for i in range(len(data))],
-            documents=[item["content_text"] for item in data],
-            metadatas=[{"title": item["title"], "url": item["url"], "id": str(i)} for item in data]
-        )
+        # Xóa hoặc đổi tên collection nếu bạn thay đổi cấu trúc dữ liệu
+        collection = client.get_or_create_collection(name="passport_official_v4", embedding_function=emb_func)
+        
+        # Kiểm tra nếu collection còn trống mới nạp dữ liệu
+        if collection.count() == 0:
+            with open("TAI_LIEU_RB.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # SỬA LỖI TẠI ĐÂY: Dùng enumerate để có cả index (i) và nội dung (item)
+            documents = [item["content_text"] for item in data]
+            metadatas = [{"title": item["title"], "url": item["url"], "id": str(i)} for i, item in enumerate(data)]
+            ids = [str(i) for i in range(len(data))]
+            
+            collection.add(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas
+            )
+    except Exception as e:
+        st.error(f"Lỗi khởi tạo Database: {e}")
+        return None
+        
     return collection
 
 collection = init_db()
 
 # ==========================================
-# 3. XỬ LÝ AI & TRÍCH DẪN NGUỒN
+# 3. XỬ LÝ AI
 # ==========================================
 def get_ai_response(user_query):
-    # Tìm kiếm dữ liệu liên quan nhất
+    if collection is None:
+        return "Dữ liệu chưa được khởi tạo.", None, None
+
+    # Tìm kiếm dữ liệu
     results = collection.query(query_texts=[user_query], n_results=1)
     
-    if not results["documents"][0]:
-        return "Xin lỗi, tôi không tìm thấy thông tin này trong nguồn dữ liệu chính thức.", None, None
+    if not results["documents"] or not results["documents"][0]:
+        return "Không tìm thấy thông tin phù hợp.", None, None
 
     context = results["documents"][0][0]
     meta = results["metadatas"][0][0]
     
-    # Prompt yêu cầu trích dẫn rõ ràng theo block nội dung
-    prompt = f"""Bạn là chuyên gia hướng dẫn dịch vụ công. 
-Dựa vào tài liệu: {context}
-Hãy trả lời câu hỏi: {user_query}
-Yêu cầu: Trả lời chính xác, ngắn gọn. Tuyệt đối không tự chế link URL."""
+    prompt = f"Dữ liệu: {context}\n\nCâu hỏi: {user_query}\nTrả lời ngắn gọn, chính xác."
 
-    # Tìm model khả dụng (Flash hoặc Pro)
     try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
-        
-        model = genai.GenerativeModel(target_model)
+        # Thử các model phổ biến
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         return response.text, meta['url'], meta['title']
-    except Exception as e:
-        return f"Lỗi kết nối AI: {str(e)}", None, None
+    except Exception:
+        return "Lỗi kết nối AI. Vui lòng thử lại sau.", None, None
 
 # ==========================================
-# 4. GIAO DIỆN NGƯỜI DÙNG (UI)
+# 4. GIAO DIỆN
 # ==========================================
-st.title("🇻🇳 Trợ lý ảo Dịch vụ công Chính thức")
-st.markdown("---")
+st.title("🇻🇳 Trợ lý ảo Hộ chiếu")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Hiển thị lịch sử chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Ô nhập câu hỏi
-user_input = st.chat_input("Nhập câu hỏi về thủ tục hành chính...")
+user_input = st.chat_input("Nhập câu hỏi...")
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -97,24 +105,6 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Đang tra cứu từ nguồn dữ liệu chính thức..."):
-            answer, source_url, source_title = get_ai_response(user_input)
-            
-            # Xây dựng phần hiển thị trích dẫn (như yêu cầu trong ảnh)
-            formatted_answer = f"{answer}\n\n"
-            if source_url:
-                formatted_answer += f"**Trích dẫn nguồn:**\n"
-                formatted_answer += f"- 📄 Tài liệu: *{source_title}*\n"
-                formatted_answer += f"- 🔗 Link thực hiện dịch vụ: [Nhấn vào đây để truy cập]({source_url})"
-            
-            st.markdown(formatted_answer)
-            st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
-
-with st.sidebar:
-    st.header("Cam kết chất lượng")
-    st.write("✅ Trả lời bằng tiếng Việt tự nhiên.")
-    st.write("✅ Trích dẫn rõ nguồn gốc tài liệu.")
-    st.write("✅ Dễ dàng kiểm chứng thông tin.")
-    if st.button("Xóa lịch sử trò chuyện"):
-        st.session_state.messages = []
-        st.rerun()
+        answer, url, title = get_ai_response(user_input)
+        
+        full_res = f"{answer}\n\n
