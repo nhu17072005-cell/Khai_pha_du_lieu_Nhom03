@@ -17,11 +17,24 @@ else:
 
 genai.configure(api_key=api_key)
 
-# Thử nghiệm các tên model khả thi
-MODEL_OPTIONS = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-pro"]
+# ------------------------------------------
+@st.cache_resource
+def find_available_model():
+    try:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # Ưu tiên flash, rồi đến pro
+        for m_name in models:
+            if "1.5-flash" in m_name: return m_name
+        for m_name in models:
+            if "pro" in m_name: return m_name
+        return models[0] if models else "gemini-pro"
+    except Exception:
+        return "gemini-1.5-flash" 
+
+AVAILABLE_MODEL = find_available_model()
 
 # ==========================================
-# 2. XỬ LÝ DỮ LIỆU (Giữ nguyên logic cũ)
+# 2. XỬ LÝ DỮ LIỆU
 # ==========================================
 @st.cache_resource
 def get_embedding_function():
@@ -51,7 +64,7 @@ def init_vector_db():
 collection = init_vector_db()
 
 # ==========================================
-# 3. LOGIC CHATBOT (Cập nhật sửa lỗi 404)
+# 3. LOGIC CHATBOT
 # ==========================================
 def get_chatbot_response(user_query):
     results = collection.query(query_texts=[user_query], n_results=3)
@@ -61,23 +74,15 @@ def get_chatbot_response(user_query):
 
     full_prompt = f"Ngữ cảnh: {context_text}\n\nCâu hỏi: {user_query}"
 
-    # Vòng lặp thử từng model cho đến khi thành công
-    last_error = ""
-    for model_name in MODEL_OPTIONS:
-        try:
-            model = genai.GenerativeModel(model_name=model_name)
-            response = model.generate_content(full_prompt)
-            return response.text
-        except Exception as e:
-            last_error = str(e)
-            continue # Thử model tiếp theo trong danh sách
-            
-    return f"Xin lỗi, hiện tại không thể kết nối với AI (Lỗi: {last_error})"
+    model = genai.GenerativeModel(model_name=AVAILABLE_MODEL)
+    response = model.generate_content(full_prompt)
+    return response.text
 
 # ==========================================
 # 4. GIAO DIỆN
 # ==========================================
 st.title("🇻🇳 Trợ lý ảo Hộ chiếu")
+st.write(f" Đang sử dụng model: `{AVAILABLE_MODEL}`")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -86,7 +91,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_input = st.chat_input("Nhập câu hỏi...")
+user_input = st.chat_input("Nhập câu hỏi về thủ tục hộ chiếu...")
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -94,7 +99,10 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Đang xử lý..."):
-            answer = get_chatbot_response(user_input)
-            st.markdown(answer)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+        with st.spinner("Đang tra cứu dữ liệu..."):
+            try:
+                answer = get_chatbot_response(user_input)
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+            except Exception as e:
+                st.error(f"Lỗi: {str(e)}")
