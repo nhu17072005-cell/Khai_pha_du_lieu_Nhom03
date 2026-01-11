@@ -18,23 +18,22 @@ st.set_page_config(
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
 else:
-    # Key dự phòng (chỉ dùng khi test local)
     api_key = "AIzaSyCzcZwCm4cycmjT2Q1biZNYDfbI5sh9Cr4"
 
 genai.configure(api_key=api_key)
 
-# Cấu hình đường dẫn và model
+# Cấu hình file và model
 JSON_FILE = "TAI_LIEU_RB.json" 
 CHROMA_DB_PATH = "chroma_db_data"
 COLLECTION_NAME = "RAG_procedure"
-GEMINI_MODEL_NAME = "gemini-1.5-flash" 
+
+GEMINI_MODEL_NAME = "gemini-2.5-flash" 
 
 # ==========================================
 # 2. XỬ LÝ DỮ LIỆU & EMBEDDING
 # ==========================================
 @st.cache_resource
 def get_embedding_function():
-    # Sử dụng model đa ngôn ngữ nhẹ để tiết kiệm RAM trên Cloud
     return embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
@@ -74,7 +73,7 @@ def get_chatbot_response(user_query):
     results = collection.query(query_texts=[user_query], n_results=3)
     
     context_text = ""
-    # ĐÃ SỬA LỖI ZIP Ở ĐÂY:
+    # Đảm bảo zip chạy đúng với index [0] của ChromaDB results
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
         context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\nLink: {meta['url']}\n---\n"
 
@@ -89,53 +88,5 @@ CONTEXT:
 CÂU HỎI: {user_query}
 """
 
-    # 3. Gọi Gemini
-    model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
-    response = model.generate_content(full_prompt)
-    return response.text
-
-# ==========================================
-# 4. GIAO DIỆN NGƯỜI DÙNG (UI)
-# ==========================================
-st.title("🇻🇳 Trợ lý ảo Thủ tục Hộ chiếu")
-st.caption("Dữ liệu cập nhật từ Cổng Dịch vụ công Quốc gia")
-
-if collection is None:
-    st.error(f"❌ Không tìm thấy file `{JSON_FILE}` trên GitHub. Vui lòng tải file lên cùng thư mục với app.py.")
-    st.stop()
-
-# Khởi tạo lịch sử chat
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Hiển thị tin nhắn cũ
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-# Nhận câu hỏi từ người dùng
-user_input = st.chat_input("Hỏi về thủ tục cấp hộ chiếu, lệ phí...")
-
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
-
-    with st.chat_message("assistant"):
-        with st.spinner("Đang tra cứu dữ liệu..."):
-            try:
-                answer = get_chatbot_response(user_input)
-                st.markdown(answer)
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-            except Exception as e:
-                st.error(f"Đã xảy ra lỗi: {str(e)}")
-
-# Thanh bên (Sidebar)
-with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Emblem_of_Vietnam.svg/512px-Emblem_of_Vietnam.svg.png", width=80)
-    st.header("Thông tin hệ thống")
-    st.write("• Model: Gemini 1.5 Flash")
-    st.write("• DB: ChromaDB (RAG)")
-    if st.button("Xóa lịch sử Chat"):
-        st.session_state.messages = []
-        st.rerun()
+    # 3. Gọi Gemini (Sử dụng cấu hình chuẩn để tránh lỗi 404)
+    model = genai.GenerativeModel(GEMINI_MODEL_
