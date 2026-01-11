@@ -10,7 +10,6 @@ import google.generativeai as genai
 # ==========================================
 st.set_page_config(page_title="Hỗ trợ Hộ chiếu VN", page_icon="🇻🇳")
 
-# Kiểm tra Key trong Secrets
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
@@ -30,45 +29,50 @@ def init_db():
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
     try:
-        collection = client.get_collection(name="passport_rag_final", embedding_function=emb_func)
+        collection = client.get_collection(name="passport_rag_v5", embedding_function=emb_func)
     except:
-        collection = client.create_collection(name="passport_rag_final", embedding_function=emb_func)
+        collection = client.create_collection(name="passport_rag_v5", embedding_function=emb_func)
         with open("TAI_LIEU_RB.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         collection.add(
             ids=[str(i) for i in range(len(data))],
             documents=[item["content_text"] for item in data],
-            metadatas=[{"title": item["title"]} for item in data]
+            metadatas=[{"title": item["title"], "url": item["url"]} for item in data]
         )
     return collection
 
 collection = init_db()
 
 # ==========================================
-# 3. CHIẾN THUẬT TỰ ĐỘNG THỬ MODEL (MODEL CYCLING)
+# 3. HÀM GỌI AI VÀ TRÍCH XUẤT URL
 # ==========================================
-def generate_with_fallback(prompt):
-    # Bước 1: Lấy danh sách thực tế các model mà KEY này dùng được
+def get_ai_response_with_url(user_query):
+    # Tìm kiếm dữ liệu
+    results = collection.query(query_texts=[user_query], n_results=1)
+    
+    if not results["documents"][0]:
+        return "Không tìm thấy thông tin phù hợp.", None, None
+
+    context = results["documents"][0][0]
+    # Lấy URL từ metadata đã lưu trong Vector DB
+    source_url = results["metadatas"][0][0].get("url", "https://dichvucong.gov.vn")
+    source_title = results["metadatas"][0][0].get("title", "Cổng Dịch vụ công")
+
+    prompt = f"""Bạn là trợ lý ảo hành chính công. 
+Dựa vào ngữ cảnh: {context}
+Hãy trả lời câu hỏi: {user_query}
+Lưu ý: Chỉ trả lời phần nội dung chính, không lặp lại link URL vì tôi sẽ tự chèn phía dưới."""
+
+    # Tự động tìm model khả dụng
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    except:
-        available_models = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
-
-    # Bước 2: Thử từng model trong danh sách
-    errors = []
-    for model_name in available_models:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text, model_name
-        except Exception as e:
-            errors.append(f"{model_name}: {str(e)}")
-            continue
-            
-    # Nếu tất cả đều thất bại
-    st.error("Tất cả các model đều không phản hồi. Chi tiết lỗi:")
-    for err in errors: st.write(err)
-    return None, None
+        model_name = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
+        
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
+        return response.text, source_url, source_title
+    except Exception as e:
+        return f"Lỗi: {str(e)}", None, None
 
 # ==========================================
 # 4. GIAO DIỆN
@@ -82,7 +86,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_input = st.chat_input("Nhập câu hỏi...")
+user_input = st.chat_input("Hỏi về thủ tục hộ chiếu...")
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -90,17 +94,14 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Đang kết nối AI..."):
-            # Tìm kiếm ngữ cảnh
-            results = collection.query(query_texts=[user_input], n_results=1)
-            context = results["documents"][0][0] if results["documents"] else ""
+        with st.spinner("Đang tra cứu..."):
+            answer, url, title = get_ai_response_with_url(user_input)
             
-            full_prompt = f"Dữ liệu: {context}\n\nCâu hỏi: {user_input}\nTrả lời ngắn gọn bằng tiếng Việt."
-            
-            # Gọi hàm Fallback
-            answer, success_model = generate_with_fallback(full_prompt)
-            
-            if answer:
-                st.markdown(answer)
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-                st.caption(f"✅ Đã chạy thành công trên: `{success_model}`")
+            if url:
+                # Định dạng câu trả lời kèm nút bấm hoặc link rõ ràng
+                full_response = f"{answer}\n\n---\n🔗 **Chi tiết thủ tục tại Cổng DVC:** [{title}]({url})"
+            else:
+                full_response = answer
+                
+            st.markdown(full_response)
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
