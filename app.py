@@ -72,8 +72,23 @@ collection = init_vector_db()
 # 3. LOGIC CHATBOT
 # ==========================================
 def get_chatbot_response(user_query):
-    # 1. Tìm kiếm thông tin trong Vector DB
     results = collection.query(query_texts=[user_query], n_results=3)
     
     context_text = ""
-    for doc, meta in zip
+   
+    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+        context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\nLink: {meta['url']}\n---"
+
+    full_prompt = f"""Bạn là chuyên gia hướng dẫn thủ tục hành chính tại Việt Nam. 
+Hãy trả lời câu hỏi dựa trên Context dưới đây một cách lịch sự, chính xác.
+Nếu thông tin không có trong Context, hãy hướng dẫn người dùng liên hệ Cổng Dịch vụ công hoặc Cơ quan Công an.
+
+CONTEXT:
+{context_text}
+
+CÂU HỎI: {user_query}
+"""
+
+    model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
+    response = model.generate_content(full_prompt)
+    return response.text
