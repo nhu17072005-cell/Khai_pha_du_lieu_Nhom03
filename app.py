@@ -1,3 +1,11 @@
+pip install streamlit
+pip install chromadb
+pip install google-generativeai
+pip install sentence-transformers
+pip install torch torchvision torchaudio
+pip install beautifulsoup4 requests
+pip install streamlit localtunnel
+
 import streamlit as st
 import json
 import os
