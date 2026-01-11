@@ -1,4 +1,3 @@
-
 import streamlit as st
 import json
 import os
@@ -9,76 +8,68 @@ import google.generativeai as genai
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Chatbot Hộ Chiếu Việt Nam", page_icon="🇻🇳")
+st.set_page_config(page_title="Hỗ trợ Hộ chiếu VN", page_icon="🇻🇳")
 
-# Lấy API Key từ Secrets
+# Kiểm tra Key trong Secrets
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
 else:
-    st.error("❌ Chưa tìm thấy API Key trong Secrets!")
+    st.error("❌ Vui lòng dán API Key vào mục Secrets của Streamlit!")
     st.stop()
 
-# ------------------------------------------
-# TỰ ĐỘNG TÌM TÊN MODEL ĐÚNG (SỬA LỖI 404)
-# ------------------------------------------
-@st.cache_resource
-def find_correct_model_name():
-    try:
-        # Lấy danh sách tất cả model có hỗ trợ generateContent
-        available_models = [
-            m.name for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        # Ưu tiên tìm model Flash 1.5
-        for name in available_models:
-            if "1.5-flash" in name:
-                return name
-        # Nếu không thấy Flash, thử tìm bản Pro
-        for name in available_models:
-            if "pro" in name:
-                return name
-        return available_models[0]
-    except Exception as e:
-        # Nếu không liệt kê được, dùng tên mặc định phổ biến nhất
-        return "models/gemini-1.5-flash"
-
-AVAILABLE_MODEL = find_correct_model_name()
+# ĐỊNH DANH MODEL CHUẨN (Ép dùng Flash để có Quota cao nhất)
+MODEL_NAME = "gemini-1.5-flash"
 
 # ==========================================
 # 2. XỬ LÝ DỮ LIỆU (RAG)
 # ==========================================
 @st.cache_resource
-def init_vector_db():
+def init_db():
     if not os.path.exists("TAI_LIEU_RB.json"):
         return None
     
+    # Khởi tạo Vector DB nhẹ
     client = chromadb.PersistentClient(path="chroma_db_data")
-    # Model embedding nhẹ cho Streamlit Cloud
     emb_func = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
     
     try:
-        collection = client.get_collection(name="RAG_passport", embedding_function=emb_func)
+        collection = client.get_collection(name="passport_rag", embedding_function=emb_func)
     except:
-        collection = client.create_collection(name="RAG_passport", embedding_function=emb_func)
+        collection = client.create_collection(name="passport_rag", embedding_function=emb_func)
         with open("TAI_LIEU_RB.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         collection.add(
             ids=[str(i) for i in range(len(data))],
             documents=[item["content_text"] for item in data],
-            metadatas=[{"title": item["title"], "url": item["url"]} for item in data]
+            metadatas=[{"title": item["title"]} for item in data]
         )
     return collection
 
-collection = init_vector_db()
+collection = init_db()
 
 # ==========================================
-# 3. GIAO DIỆN & CHAT
+# 3. HÀM XỬ LÝ PHẢN HỒI (TỐI ƯU QUOTA)
 # ==========================================
-st.title("🇻🇳 Trợ lý ảo Hộ chiếu")
-st.info(f"Hoạt động với model: `{AVAILABLE_MODEL}`")
+def get_ai_response(user_query):
+    # Tìm kiếm 1 đoạn văn duy nhất để tiết kiệm Token đầu vào
+    results = collection.query(query_texts=[user_query], n_results=1)
+    context = results["documents"][0][0] if results["documents"] else "Không tìm thấy dữ liệu."
+
+    # Prompt tối giản để tiết kiệm hạn mức
+    prompt = f"Ngữ cảnh: {context}\nTrả lời ngắn gọn câu hỏi: {user_query}"
+    
+    model = genai.GenerativeModel(MODEL_NAME)
+    response = model.generate_content(prompt)
+    return response.text
+
+# ==========================================
+# 4. GIAO DIỆN CHAT
+# ==========================================
+st.title("🇻🇳 Trợ lý Hộ chiếu Việt Nam")
+st.caption(f"Đang sử dụng hệ thống: {MODEL_NAME} (Free Tier)")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -87,7 +78,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_input = st.chat_input("Nhập câu hỏi của bạn...")
+user_input = st.chat_input("Hỏi về lệ phí, thủ tục...")
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -97,16 +88,23 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Đang tra cứu..."):
             try:
-                # Tìm kiếm trong database
-                results = collection.query(query_texts=[user_input], n_results=2)
-                context = "\n".join(results["documents"][0])
-                
-                # Gọi Gemini với tên model đã tìm thấy
-                model = genai.GenerativeModel(model_name=AVAILABLE_MODEL)
-                prompt = f"Ngữ cảnh: {context}\n\nCâu hỏi: {user_input}"
-                response = model.generate_content(prompt)
-                
-                st.markdown(response.text)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
+                answer = get_ai_response(user_input)
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
             except Exception as e:
-                st.error(f"Lỗi: {str(e)}")
+                error_msg = str(e)
+                if "429" in error_msg:
+                    st.warning("⚠️ Bạn đã dùng hết lượt miễn phí trong phút này. Vui lòng đợi 30-60 giây rồi thử lại.")
+                elif "404" in error_msg:
+                    st.error("❌ Model hiện tại không khả dụng. Vui lòng kiểm tra lại API Key.")
+                else:
+                    st.error(f"Lỗi hệ thống: {error_msg}")
+
+# Sidebar
+with st.sidebar:
+    st.header("Lưu ý")
+    st.write("- Chỉ hỏi về thủ tục hộ chiếu.")
+    st.write("- Nếu bị lỗi quá tải, hãy chờ 1 phút.")
+    if st.button("Xóa lịch sử"):
+        st.session_state.messages = []
+        st.rerun()
