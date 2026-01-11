@@ -87,7 +87,7 @@ CONTEXT:
 CÂU HỎI: {user_query}
 """
 
-    # 3. Gọi Gemini (Đã sửa lỗi đóng ngoặc dòng 92)
+    # 3. Gọi Gemini 
     model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
     response = model.generate_content(full_prompt)
     return response.text
