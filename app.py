@@ -14,33 +14,26 @@ st.set_page_config(
     layout="centered"
 )
 
-# Lấy API Key từ Secrets của Streamlit Cloud (Bắt buộc để không bị lỗi Leaked Key)
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
 else:
-    st.error("❌ Lỗi: Chưa tìm thấy API Key. Hãy thêm GOOGLE_API_KEY vào mục Secrets trên Streamlit Cloud.")
-    st.info("Hướng dẫn: Settings -> Secrets -> Dán: GOOGLE_API_KEY = 'Mã_API_Của_Bạn'")
+    st.error("❌ Chưa tìm thấy API Key trong Secrets!")
     st.stop()
 
 # ------------------------------------------
-# TỰ ĐỘNG TÌM MODEL KHẢ DỤNG
-# ------------------------------------------
 @st.cache_resource
-def find_available_model():
+def get_safe_model_name():
     try:
-        # Liệt kê các model mà Key của bạn có quyền sử dụng
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # Ưu tiên lấy bản 1.5 flash, nếu không có thì lấy các bản khác
-        for m_name in models:
-            if "1.5-flash" in m_name: return m_name
-        for m_name in models:
-            if "pro" in m_name: return m_name
-        return models[0] if models else "gemini-1.5-flash"
-    except Exception:
+        # Liệt kê model để kiểm tra tính khả dụng
+        models = [m.name for m in genai.list_models()]
+        for m in models:
+            if "1.5-flash" in m: return m
+        return "gemini-1.5-flash"
+    except:
         return "gemini-1.5-flash"
 
-AVAILABLE_MODEL = find_available_model()
+AVAILABLE_MODEL = get_safe_model_name()
 
 # ==========================================
 # 2. XỬ LÝ DỮ LIỆU & VECTOR DB
@@ -50,7 +43,7 @@ CHROMA_DB_PATH = "chroma_db_data"
 
 @st.cache_resource
 def get_embedding_function():
-    # Model embedding đa ngôn ngữ nhẹ cho Cloud
+    # Sử dụng model nhỏ để không tốn RAM của Streamlit
     return embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="paraphrase-multilingual-MiniLM-L12-v2"
     )
@@ -70,7 +63,6 @@ def init_vector_db():
         with open(JSON_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        # Nạp dữ liệu vào database
         collection.add(
             ids=[str(i) for i in range(len(data))],
             documents=[item["content_text"] for item in data],
@@ -87,47 +79,45 @@ collection = init_vector_db()
 # 3. LOGIC XỬ LÝ CHAT (RAG)
 # ==========================================
 def get_chatbot_response(user_query):
-    # Tìm kiếm 3 đoạn thông tin liên quan nhất
-    results = collection.query(query_texts=[user_query], n_results=3)
+    # Tìm kiếm 2 đoạn tin quan trọng nhất (giảm xuống 2 để tiết kiệm Token)
+    results = collection.query(query_texts=[user_query], n_results=2)
     
     context_text = ""
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\nLink: {meta['url']}\n---\n"
+        context_text += f"\n[Nguồn: {meta['title']}]\n{doc}\n---\n"
 
-    full_prompt = f"""Bạn là chuyên gia tư vấn thủ tục hành chính tại Việt Nam. 
-Hãy sử dụng thông tin trong Ngữ cảnh dưới đây để trả lời câu hỏi một cách chính xác và thân thiện.
-Nếu thông tin không có trong Ngữ cảnh, hãy hướng dẫn người dùng liên hệ Cổng Dịch vụ công hoặc Cơ quan Công an.
+    full_prompt = f"""Bạn là chuyên gia tư vấn hộ chiếu Việt Nam.
+Dựa vào ngữ cảnh dưới đây, hãy trả lời câu hỏi ngắn gọn, chính xác.
+Nếu thông tin không có, hãy nói bạn không biết.
 
 NGỮ CẢNH:
 {context_text}
 
-CÂU HỎI: {user_query}
-"""
+CÂU HỎI: {user_query}"""
 
     model = genai.GenerativeModel(model_name=AVAILABLE_MODEL)
+    # Cấu hình giảm token đầu ra để tiết kiệm quota
     response = model.generate_content(full_prompt)
     return response.text
 
 # ==========================================
 # 4. GIAO DIỆN NGƯỜI DÙNG
 # ==========================================
-st.title("🇻🇳 Trợ lý ảo Thủ tục Hộ chiếu")
-st.write(f"🤖 Đang sử dụng model: `{AVAILABLE_MODEL}`")
+st.title("🇻🇳 Trợ lý ảo Hộ chiếu (Tối ưu Quota)")
+st.info(f"Hoạt động với model: `{AVAILABLE_MODEL}`")
 
 if collection is None:
-    st.error(f"❌ Thiếu file dữ liệu `{JSON_FILE}` trên GitHub!")
+    st.error(f" Không thấy file `{JSON_FILE}`!")
     st.stop()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Hiển thị lại các tin nhắn cũ
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Ô nhập câu hỏi
-user_input = st.chat_input("Hỏi về cấp hộ chiếu, lệ phí, thủ tục...")
+user_input = st.chat_input("Nhập câu hỏi của bạn...")
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -135,19 +125,20 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Đang tra cứu dữ liệu..."):
+        with st.spinner("Đang tìm lời giải..."):
             try:
                 answer = get_chatbot_response(user_input)
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             except Exception as e:
-                st.error(f"Lỗi: {str(e)}")
+                if "429" in str(e):
+                    st.error("Hệ thống đang quá tải (Hết lượt dùng miễn phí). Vui lòng thử lại sau 1 phút.")
+                else:
+                    st.error(f"Lỗi: {str(e)}")
 
-# Sidebar bổ sung
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Emblem_of_Vietnam.svg/512px-Emblem_of_Vietnam.svg.png", width=100)
-    st.header("Thông tin")
-    st.info("Ứng dụng hỗ trợ tra cứu các thủ tục hành chính về Hộ chiếu phổ thông.")
-    if st.button("Làm mới Chat"):
+    st.markdown("### Hướng dẫn")
+    st.write("Nếu gặp lỗi 429, vui lòng chờ khoảng 60 giây trước khi hỏi câu tiếp theo.")
+    if st.button("Xóa lịch sử"):
         st.session_state.messages = []
         st.rerun()
